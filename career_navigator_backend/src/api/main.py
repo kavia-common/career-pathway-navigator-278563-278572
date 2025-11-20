@@ -4,7 +4,7 @@ import re
 import urllib.parse
 from typing import Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 from src.db.database import Base, engine, get_db, ensure_sqlite_schema_compatibility
 from src.db.models import Recommendation, Role, RoleSkill, Skill
 from src.db.repositories import ProgressRepository, RoleRepository, SkillRepository
+from src.db.roadmap_repository import RoadmapRepository
 from src.db.seed import seed_minimal_dataset_idempotent
 from src.schemas.schemas import (
     AssessmentIn,
@@ -23,6 +24,8 @@ from src.schemas.schemas import (
     RoleOut,
     SkillDetailOut,
     SkillOut,
+    RoadmapIn,
+    RoadmapOut,
 )
 
 # Configure basic logging; in production, integrate with structured logging
@@ -59,6 +62,7 @@ app = FastAPI(
         {"name": "graph", "description": "Graph construction APIs for D3"},
         {"name": "assessments", "description": "Role gap assessment APIs"},
         {"name": "recommendations", "description": "Recommendations APIs"},
+        {"name": "roadmaps", "description": "Save and load career roadmaps"},
     ],
 )
 
@@ -399,6 +403,11 @@ def get_graph(
     fromRole: int = Query(..., ge=1, description="Current role ID"),
     toRole: int = Query(..., ge=1, description="Target role ID"),
     db: Session = Depends(get_db),
+    # Optional compact progress map for nodes: { "skill:Communication": {"progress":"in_progress","percent":40}, ... }
+    progress: Optional[str] = Query(
+        None,
+        description="Optional URL-encoded JSON mapping of nodeId->progress info to echo in nodes",
+    ),
 ) -> GraphOut:
     """
     Build a D3-friendly graph showing current role, target role, skill nodes,
@@ -475,6 +484,23 @@ def get_graph(
         forced_gap_skills = [s for s in final_gap_skills if s not in natural_gap_skills]
 
         # Nodes: two roles + union of skills
+        # Parse optional progress mapping string (URL-encoded JSON)
+        progress_map: Dict[str, Dict[str, object]] = {}
+        if progress:
+            try:
+                import json as _json
+
+                progress_map = _json.loads(progress)
+                # sanitize keys to avoid control characters
+                progress_map = {
+                    _sanitize(k): v
+                    for k, v in progress_map.items()
+                    if isinstance(k, str) and isinstance(v, dict)
+                }
+            except Exception:
+                # ignore invalid progress payloads
+                progress_map = {}
+
         nodes: List[Dict[str, object]] = []
         links: List[Dict[str, object]] = []
 
@@ -517,16 +543,29 @@ def get_graph(
                 elif sname in current_rs_by_skill and current_rs_by_skill[sname].color:
                     node_color = current_rs_by_skill[sname].color
 
-            nodes.append(
-                {
-                    "id": f"skill:{sname}",
-                    "type": "skill",
-                    "label": sname,
-                    "color": node_color,
-                    "is_gap": bool(is_gap),
-                    "entity_id": int(skill_id_by_name.get(sname)) if skill_id_by_name.get(sname) is not None else None,
-                }
-            )
+            node_obj: Dict[str, object] = {
+                "id": f"skill:{sname}",
+                "type": "skill",
+                "label": sname,
+                "color": node_color,
+                "is_gap": bool(is_gap),
+                "entity_id": int(skill_id_by_name.get(sname)) if skill_id_by_name.get(sname) is not None else None,
+            }
+            # Echo optional progress on node
+            pm = progress_map.get(node_obj["id"]) if progress_map else None
+            if isinstance(pm, dict):
+                st = str(pm.get("progress", "")).strip().lower()
+                if st in {"not_started", "in_progress", "completed"}:
+                    node_obj["progress"] = st
+                pct = pm.get("percent") if pm is not None else None
+                try:
+                    if pct is not None:
+                        ival = int(pct)
+                        if 0 <= ival <= 100:
+                            node_obj["percent_complete"] = ival
+                except Exception:
+                    pass
+            nodes.append(node_obj)
 
             # Link current role -> skill with required level if present
             if sname in current_req:
@@ -686,3 +725,196 @@ def _sanitize(value: str) -> str:
     v = value.strip()
     # remove control characters
     return re.sub(r"[\x00-\x1f\x7f]+", "", v)
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/roadmaps",
+    tags=["roadmaps"],
+    response_model=RoadmapOut,
+    summary="Create/save a roadmap",
+    description="Persist a roadmap graph with name, roles, user identifier, and notes.",
+)
+def create_roadmap(
+    payload: RoadmapIn,
+    db: Session = Depends(get_db),
+) -> RoadmapOut:
+    """Create a roadmap for the given user (demo identifier)."""
+    repo = RoadmapRepository(db)
+    try:
+        rm = repo.create(
+            name=_sanitize(payload.name),
+            user_identifier=_sanitize(payload.user_identifier) if payload.user_identifier else None,
+            from_role_id=int(payload.from_role_id),
+            to_role_id=int(payload.to_role_id),
+            graph_payload=payload.graph_payload,
+            notes=_sanitize(payload.notes) if payload.notes else None,
+        )
+        db.commit()
+        # Convert graph_payload back to dict for response
+        import json as _json
+
+        data = _json.loads(rm.graph_payload or "{}")
+        return {
+            "id": rm.id,
+            "name": rm.name,
+            "user_identifier": rm.user_identifier,
+            "from_role_id": rm.from_role_id,
+            "to_role_id": rm.to_role_id,
+            "graph_payload": data,
+            "notes": rm.notes,
+        }  # type: ignore[return-value]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Failed to create roadmap")
+        raise HTTPException(status_code=500, detail="Unable to create roadmap")
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/roadmaps",
+    tags=["roadmaps"],
+    response_model=List[RoadmapOut],
+    summary="List roadmaps",
+    description="List roadmaps optionally filtered by user_identifier (query '?user=').",
+)
+def list_roadmaps(
+    user: Optional[str] = Query(None, min_length=1, max_length=200, description="Filter by user identifier"),
+    db: Session = Depends(get_db),
+) -> List[RoadmapOut]:
+    """List saved roadmaps."""
+    repo = RoadmapRepository(db)
+    try:
+        items = repo.list(user_identifier=_sanitize(user) if user else None)
+        import json as _json
+
+        out: List[RoadmapOut] = []
+        for rm in items:
+            try:
+                data = _json.loads(rm.graph_payload or "{}")
+            except Exception:
+                data = {}
+            out.append(
+                {
+                    "id": rm.id,
+                    "name": rm.name,
+                    "user_identifier": rm.user_identifier,
+                    "from_role_id": rm.from_role_id,
+                    "to_role_id": rm.to_role_id,
+                    "graph_payload": data,
+                    "notes": rm.notes,
+                }  # type: ignore[arg-type]
+            )
+        return out
+    except Exception:
+        logger.exception("Failed to list roadmaps")
+        raise HTTPException(status_code=500, detail="Unable to list roadmaps")
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/roadmaps/{roadmap_id}",
+    tags=["roadmaps"],
+    response_model=RoadmapOut,
+    summary="Fetch a roadmap",
+    description="Fetch a saved roadmap by ID. Optionally pass '?user=' to enforce user match.",
+)
+def get_roadmap(
+    roadmap_id: int,
+    user: Optional[str] = Query(None, min_length=1, max_length=200, description="User identifier"),
+    db: Session = Depends(get_db),
+) -> RoadmapOut:
+    """Fetch a roadmap by id."""
+    repo = RoadmapRepository(db)
+    rm = repo.get(roadmap_id=int(roadmap_id), user_identifier=_sanitize(user) if user else None)
+    if not rm:
+        raise HTTPException(status_code=404, detail="Roadmap not found")
+    import json as _json
+
+    try:
+        data = _json.loads(rm.graph_payload or "{}")
+    except Exception:
+        data = {}
+    return {
+        "id": rm.id,
+        "name": rm.name,
+        "user_identifier": rm.user_identifier,
+        "from_role_id": rm.from_role_id,
+        "to_role_id": rm.to_role_id,
+        "graph_payload": data,
+        "notes": rm.notes,
+    }  # type: ignore[return-value]
+
+
+# PUBLIC_INTERFACE
+@app.put(
+    "/roadmaps/{roadmap_id}",
+    tags=["roadmaps"],
+    response_model=RoadmapOut,
+    summary="Update a roadmap",
+    description="Update roadmap name, payload, or notes. Optionally include '?user=' to enforce user match.",
+)
+def update_roadmap(
+    roadmap_id: int,
+    payload: RoadmapIn = Body(...),
+    user: Optional[str] = Query(None, min_length=1, max_length=200),
+    db: Session = Depends(get_db),
+) -> RoadmapOut:
+    """Update an existing roadmap."""
+    repo = RoadmapRepository(db)
+    rm = repo.get(roadmap_id=int(roadmap_id), user_identifier=_sanitize(user) if user else None)
+    if not rm:
+        raise HTTPException(status_code=404, detail="Roadmap not found")
+    try:
+        repo.update(
+            rm,
+            name=_sanitize(payload.name),
+            graph_payload=payload.graph_payload,
+            notes=_sanitize(payload.notes) if payload.notes else None,
+        )
+        # immutable in this MVP: from_role_id, to_role_id, user_identifier
+        db.commit()
+        import json as _json
+
+        data = _json.loads(rm.graph_payload or "{}")
+        return {
+            "id": rm.id,
+            "name": rm.name,
+            "user_identifier": rm.user_identifier,
+            "from_role_id": rm.from_role_id,
+            "to_role_id": rm.to_role_id,
+            "graph_payload": data,
+            "notes": rm.notes,
+        }  # type: ignore[return-value]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Failed to update roadmap")
+        raise HTTPException(status_code=500, detail="Unable to update roadmap")
+
+
+# PUBLIC_INTERFACE
+@app.delete(
+    "/roadmaps/{roadmap_id}",
+    tags=["roadmaps"],
+    summary="Delete a roadmap",
+    description="Delete a saved roadmap by ID. Optionally include '?user=' to enforce user match.",
+)
+def delete_roadmap(
+    roadmap_id: int,
+    user: Optional[str] = Query(None, min_length=1, max_length=200),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete a roadmap."""
+    repo = RoadmapRepository(db)
+    rm = repo.get(roadmap_id=int(roadmap_id), user_identifier=_sanitize(user) if user else None)
+    if not rm:
+        raise HTTPException(status_code=404, detail="Roadmap not found")
+    try:
+        repo.delete(rm)
+        db.commit()
+        return {"status": "deleted", "id": int(roadmap_id)}
+    except Exception:
+        logger.exception("Failed to delete roadmap")
+        raise HTTPException(status_code=500, detail="Unable to delete roadmap")

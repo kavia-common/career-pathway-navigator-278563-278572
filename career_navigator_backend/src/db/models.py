@@ -136,3 +136,22 @@ class Progress(TimestampMixin, Base):
 
     role: Mapped[Role] = relationship("Role", back_populates="progress")
     skill: Mapped[Skill] = relationship("Skill", back_populates="progress")
+
+
+class Roadmap(TimestampMixin, Base):
+    """Persisted roadmap graphs created by users."""
+
+    __tablename__ = "roadmaps"
+    __table_args__ = (
+        CheckConstraint("from_role_id > 0", name="chk_rm_from_role_id"),
+        CheckConstraint("to_role_id > 0", name="chk_rm_to_role_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    user_identifier: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, index=True)
+    from_role_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    to_role_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Store payload JSON as TEXT (SQLite); frontend sends sanitized JSON string
+    graph_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

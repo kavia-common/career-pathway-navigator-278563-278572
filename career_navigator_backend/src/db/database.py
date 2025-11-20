@@ -67,6 +67,7 @@ def ensure_sqlite_schema_compatibility(engine_obj: Optional[Engine] = None) -> N
     Performs idempotent, lightweight migrations for:
     - role_skills.is_gap (INTEGER NULL)
     - role_skills.color (VARCHAR(16) NULL)
+    - roadmaps table (if not exists) with required columns
 
     Safe to run multiple times; no-ops when columns already exist.
     """
@@ -87,26 +88,58 @@ def ensure_sqlite_schema_compatibility(engine_obj: Optional[Engine] = None) -> N
 
     try:
         with eng.begin() as conn:
+            inspector = inspect(conn)
+            # role_skills columns
             try:
-                inspector = inspect(conn)
                 existing_cols = {c["name"] for c in inspector.get_columns("role_skills")}
             except Exception:
-                logger.exception("Failed to inspect 'role_skills' table; skipping schema check")
-                return
+                logger.exception("Failed to inspect 'role_skills' table; skipping schema check for it")
+                existing_cols = set()
 
-            if "is_gap" not in existing_cols:
-                try:
-                    conn.execute(text("ALTER TABLE role_skills ADD COLUMN is_gap INTEGER NULL"))
-                    logger.info("SQLite migration: added role_skills.is_gap")
-                except Exception:
-                    logger.warning("SQLite migration: role_skills.is_gap add failed (already exists or locked)")
+            if existing_cols:
+                if "is_gap" not in existing_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE role_skills ADD COLUMN is_gap INTEGER NULL"))
+                        logger.info("SQLite migration: added role_skills.is_gap")
+                    except Exception:
+                        logger.warning("SQLite migration: role_skills.is_gap add failed (already exists or locked)")
 
-            if "color" not in existing_cols:
+                if "color" not in existing_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE role_skills ADD COLUMN color VARCHAR(16) NULL"))
+                        logger.info("SQLite migration: added role_skills.color")
+                    except Exception:
+                        logger.warning("SQLite migration: role_skills.color add failed (already exists or locked)")
+
+            # roadmaps table
+            try:
+                _ = {c["name"] for c in inspector.get_columns("roadmaps")}
+                table_exists = True
+            except Exception:
+                table_exists = False
+
+            if not table_exists:
                 try:
-                    conn.execute(text("ALTER TABLE role_skills ADD COLUMN color VARCHAR(16) NULL"))
-                    logger.info("SQLite migration: added role_skills.color")
+                    conn.execute(
+                        text(
+                            """
+                            CREATE TABLE IF NOT EXISTS roadmaps (
+                                id INTEGER PRIMARY KEY,
+                                name VARCHAR(200) NOT NULL,
+                                user_identifier VARCHAR(200),
+                                from_role_id INTEGER NOT NULL,
+                                to_role_id INTEGER NOT NULL,
+                                graph_payload TEXT NOT NULL,
+                                notes TEXT,
+                                created_at DATETIME NOT NULL,
+                                updated_at DATETIME NOT NULL
+                            )
+                            """
+                        )
+                    )
+                    logger.info("SQLite migration: created roadmaps table")
                 except Exception:
-                    logger.warning("SQLite migration: role_skills.color add failed (already exists or locked)")
+                    logger.warning("SQLite migration: creation of roadmaps table failed or already exists")
     except Exception:
         logger.exception("SQLite schema compatibility check failed unexpectedly")
 

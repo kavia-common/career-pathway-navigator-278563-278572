@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -69,6 +69,13 @@ class GraphNode(BaseModel):
     entity_id: Optional[int] = Field(None, description="Entity ID for this node (Role.id or Skill.id)")
     color: Optional[str] = Field(None, description="Optional color hex for this node")
     is_gap: Optional[bool] = Field(None, description="If true, this node represents a gap for the current role")
+    # Progress state on node (frontend editable)
+    progress: Optional[Literal["not_started", "in_progress", "completed"]] = Field(
+        None, description="Progress status for this skill node"
+    )
+    percent_complete: Optional[int] = Field(
+        None, ge=0, le=100, description="Optional numeric percent complete for this skill node"
+    )
 
 
 class GraphLink(BaseModel):
@@ -125,3 +132,29 @@ class SkillRoleOut(BaseModel):
 
 class SkillDetailOut(SkillOut):
     roles: List[SkillRoleOut] = []
+
+
+class RoadmapIn(BaseModel):
+    """Input schema for creating/updating a roadmap."""
+
+    name: str = Field(..., min_length=1, max_length=200, description="Human-readable roadmap name")
+    user_identifier: Optional[str] = Field(None, max_length=200, description="Demo user identifier")
+    from_role_id: int = Field(..., ge=1, description="Current role id")
+    to_role_id: int = Field(..., ge=1, description="Target role id")
+    graph_payload: Dict[str, object] = Field(..., description="Graph JSON including nodes/links/meta")
+    notes: Optional[str] = Field(None, description="Optional notes")
+
+
+class RoadmapOut(BaseModel):
+    """Output schema for roadmap entries."""
+
+    id: int
+    name: str
+    user_identifier: Optional[str] = None
+    from_role_id: int
+    to_role_id: int
+    graph_payload: Dict[str, object]
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True

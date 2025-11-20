@@ -9,9 +9,15 @@ Backend (FastAPI) key endpoints:
 - GET /skills
 - GET /skills/{skill_id}
 - GET /skills/by-name/{skill_name}
-- GET /graph?fromRole=&toRole=
+- GET /graph?fromRole=&toRole=&progress=<urlencoded-json>
 - GET /recommendations?roleId=&skillId=
 - POST /assessments { currentRoleId, targetRoleId }
+- Roadmaps (demo persistence, not authenticated):
+  - POST /roadmaps
+  - GET /roadmaps
+  - GET /roadmaps/{id}
+  - PUT /roadmaps/{id}
+  - DELETE /roadmaps/{id}
 
 Generate OpenAPI: `python -m src.api.generate_openapi` (writes to career_navigator_backend/interfaces/openapi.json)
 
@@ -19,6 +25,11 @@ Environment
 - DATABASE_URL (optional): defaults to sqlite:///./data/app.db
 - ALLOW_ALL_CORS (optional): "true" by default, allows all origins without credentials.
 - ALLOWED_CORS_ORIGINS (optional): comma-separated origins used when ALLOW_ALL_CORS is not true.
+
+Security note
+- Roadmap endpoints use a user_identifier string provided by the frontend as a demo stub. This is NOT authentication.
+- Do not send secrets or PII. Inputs are validated/sanitized server-side.
+- For production, integrate real authentication and scoping.
 
 Seeding and Data Notes
 - On startup, the service always runs idempotent seeding for roles/skills/recommendations.
