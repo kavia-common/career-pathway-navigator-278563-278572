@@ -25,13 +25,17 @@ from src.schemas.schemas import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Allowed CORS origins for local React app and preview environment.
-# Can be overridden via ALLOWED_CORS_ORIGINS env var as a comma-separated list.
+# Allowed CORS configuration:
+# - When ALLOW_ALL_CORS=true (default for preview), allow all origins/methods/headers with allow_credentials=False
+# - Otherwise, use ALLOWED_CORS_ORIGINS (comma-separated), falling back to defaults for localhost/preview.
 DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     # Default preview origin (update as needed)
     "https://vscode-internal-11652-beta.beta01.cloud.kavia.ai:3000",
 ]
+_env_allow_all = os.environ.get("ALLOW_ALL_CORS", "true").strip().lower()  # default to true for preview convenience
+ALLOW_ALL_CORS = _env_allow_all in {"1", "true", "yes", "y"}
+
 _env_origins = os.environ.get("ALLOWED_CORS_ORIGINS")
 if _env_origins:
     # sanitize and split, ignore empty parts
@@ -53,16 +57,26 @@ app = FastAPI(
     ],
 )
 
-# Configure CORS to explicitly allow preview and localhost origins.
-# Note: credentials are disabled unless cookies/auth are required.
-# Preflight OPTIONS requests are handled by CORSMiddleware.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,  # set True only if cookies/auth are required
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-)
+# Configure CORS.
+# If ALLOW_ALL_CORS is enabled, use wildcard origins/methods/headers and keep allow_credentials False
+# to comply with CORS rules (wildcard cannot be combined with credentials).
+if ALLOW_ALL_CORS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,  # must be False when using wildcard origins
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # Explicit list of allowed origins; adjust via ALLOWED_CORS_ORIGINS env var.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=False,  # set True only if cookies/auth are required and not using "*"
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
 
 
 @app.on_event("startup")
