@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -55,3 +55,49 @@ class ProgressOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Graph schemas to support D3 mapper contract
+class GraphNode(BaseModel):
+    id: str = Field(..., description="Unique identifier used by D3 (e.g., role:1 or skill:Communication)")
+    type: str = Field(..., description="Node type, e.g., role or skill")
+    label: str = Field(..., description="Human-readable label")
+
+
+class GraphLink(BaseModel):
+    source: str = Field(..., description="Source node id")
+    target: str = Field(..., description="Target node id")
+    type: str = Field(..., description="Link type, e.g., requires")
+    level: Optional[int] = Field(None, ge=0, le=5, description="Required level when applicable")
+    from_: Optional[str] = Field(None, alias="from", description="Origin (current|target) for requires link")
+
+
+class GraphMeta(BaseModel):
+    fromRole: Dict[str, object]
+    toRole: Dict[str, object]
+    stats: Dict[str, int]
+
+
+class GraphOut(BaseModel):
+    nodes: List[GraphNode]
+    links: List[GraphLink]
+    meta: GraphMeta
+
+
+# Assessment input/output
+class AssessmentIn(BaseModel):
+    currentRoleId: int = Field(..., ge=1, description="Current role ID")
+    targetRoleId: int = Field(..., ge=1, description="Target role ID")
+
+
+class AssessmentItem(BaseModel):
+    skill: str
+    current: int
+    required: int
+    gap: int
+
+
+class AssessmentOut(BaseModel):
+    strengths: List[AssessmentItem]
+    gaps: List[AssessmentItem]
+    meta: Dict[str, object]
