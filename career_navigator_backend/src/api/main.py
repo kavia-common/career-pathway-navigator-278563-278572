@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from typing import Dict, List, Optional
 
@@ -24,8 +25,18 @@ from src.schemas.schemas import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Allowed CORS origin for local React app
-ALLOWED_ORIGINS = ["http://localhost:3000"]
+# Allowed CORS origins for local React app and preview environment.
+# Can be overridden via ALLOWED_ORIGINS env var as a comma-separated list.
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://vscode-internal-31939-beta.beta01.cloud.kavia.ai:3000",
+]
+_env_origins = os.environ.get("ALLOWED_ORIGINS")
+if _env_origins:
+    # sanitize and split, ignore empty parts
+    ALLOWED_ORIGINS = [o.strip() for o in _env_origins.split(",") if o.strip()]
+else:
+    ALLOWED_ORIGINS = DEFAULT_ALLOWED_ORIGINS
 
 app = FastAPI(
     title="Career Navigator Backend",
@@ -41,10 +52,12 @@ app = FastAPI(
     ],
 )
 
+# Configure CORS to explicitly allow preview and localhost origins.
+# Note: credentials are disabled unless cookies/auth are required.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
