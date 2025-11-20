@@ -5,7 +5,8 @@ from typing import Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, joinedload
 
 from src.db.database import Base, engine, get_db
 from src.db.models import Recommendation, Role, RoleSkill
@@ -84,11 +85,23 @@ def on_startup() -> None:
     """Initialize database, create tables, and seed minimal dataset if empty."""
     try:
         Base.metadata.create_all(bind=engine)
-        with next(get_db()) as session:  # type: ignore[assignment]
+        # Ensure we have a session and handle its lifecycle robustly
+        db_gen = get_db()
+        session = next(db_gen)  # type: ignore[assignment]
+        try:
             # Seed only if DB is empty of roles
             if not RoleRepository(session).list_roles():
                 seed_minimal_dataset(session)
                 session.commit()
+        finally:
+            try:
+                next(db_gen)
+            except StopIteration:
+                pass
+            try:
+                session.close()
+            except Exception:
+                logger.warning("Error closing DB session on startup")
     except Exception:  # noqa: BLE001
         logger.exception("Startup initialization failed")
         # Do not crash the app; it can still run, but dataset may be empty
@@ -114,6 +127,9 @@ def list_roles(db: Session = Depends(get_db)) -> List[RoleOut]:
     try:
         repo = RoleRepository(db)
         return repo.list_roles()
+    except SQLAlchemyError:
+        logger.exception("DB error while listing roles")
+        raise HTTPException(status_code=500, detail="Database error while listing roles")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to list roles")
         raise HTTPException(status_code=500, detail="Unable to list roles")
@@ -129,13 +145,28 @@ def list_roles(db: Session = Depends(get_db)) -> List[RoleOut]:
 )
 def get_role_detail(role_name: str, db: Session = Depends(get_db)) -> RoleDetailOut:
     """Fetch a role with its required skills and recommendations."""
-    repo = RoleRepository(db)
-    role: Optional[Role] = repo.get_role_by_name(_sanitize(role_name))
-    if not role:
-        raise HTTPException(status_code=404, detail="Role not found")
-    # Trigger lazy relationships to serialize nested content
-    _ = [rs.recommendations for rs in role.skills]  # noqa: F841
-    return role  # type: ignore[return-value]
+    try:
+        # Eager load nested relationships to avoid lazy-load after session issues
+        role: Optional[Role] = (
+            db.query(Role)
+            .options(
+                joinedload(Role.skills).joinedload(RoleSkill.recommendations),
+                joinedload(Role.skills).joinedload(RoleSkill.skill),
+            )
+            .filter(Role.name == _sanitize(role_name))
+            .first()
+        )
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        return role  # type: ignore[return-value]
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        logger.exception("DB error while fetching role detail")
+        raise HTTPException(status_code=500, detail="Database error while fetching role")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to fetch role detail")
+        raise HTTPException(status_code=500, detail="Unable to fetch role")
 
 
 # PUBLIC_INTERFACE
@@ -155,6 +186,9 @@ def get_role_progress(role_name: str, db: Session = Depends(get_db)) -> List[Pro
         raise HTTPException(status_code=404, detail="Role not found")
     try:
         return prepo.list_role_progress(role)
+    except SQLAlchemyError:
+        logger.exception("DB error while listing progress")
+        raise HTTPException(status_code=500, detail="Database error while listing progress")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to list progress")
         raise HTTPException(status_code=500, detail="Unable to list progress")
@@ -212,6 +246,9 @@ def set_progress(
         return progress  # type: ignore[return-value]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError:
+        logger.exception("DB error while setting progress")
+        raise HTTPException(status_code=500, detail="Database error while setting progress")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to set progress")
         raise HTTPException(status_code=500, detail="Unable to set progress")
@@ -234,6 +271,9 @@ def get_graph(
     Build a D3-friendly graph showing current role, target role, skill nodes,
     and links encoding required levels and gaps.
     """
+    # early param guard
+    if fromRole == toRole:
+        raise HTTPException(status_code=400, detail="fromRole and toRole must be different")
     try:
         rrepo = RoleRepository(db)
         current = _get_role_by_id(rrepo, fromRole)
@@ -246,8 +286,8 @@ def get_graph(
         target_req: Dict[str, int] = {rs.skill.name: rs.required_level for rs in target.skills}
 
         # Nodes: two roles + union of skills
-        nodes = []
-        links = []
+        nodes: List[Dict[str, str]] = []
+        links: List[Dict[str, object]] = []
 
         # Add role nodes
         nodes.append({"id": f"role:{current.id}", "type": "role", "label": current.name})
@@ -266,7 +306,7 @@ def get_graph(
                         "source": f"role:{current.id}",
                         "target": f"skill:{sname}",
                         "type": "requires",
-                        "level": current_req[sname],
+                        "level": int(current_req[sname]),
                         "from": "current",
                     }
                 )
@@ -277,7 +317,7 @@ def get_graph(
                         "source": f"role:{target.id}",
                         "target": f"skill:{sname}",
                         "type": "requires",
-                        "level": target_req[sname],
+                        "level": int(target_req[sname]),
                         "from": "target",
                     }
                 )
@@ -294,6 +334,9 @@ def get_graph(
         return {"nodes": nodes, "links": links, "meta": meta}  # type: ignore[return-value]
     except HTTPException:
         raise
+    except SQLAlchemyError:
+        logger.exception("DB error while constructing graph")
+        raise HTTPException(status_code=500, detail="Database error while building graph")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to construct graph")
         raise HTTPException(status_code=500, detail="Unable to build graph")
@@ -327,6 +370,9 @@ def get_recommendations(
         # Return list of Recommendation models, Pydantic will convert
         recs: List[Recommendation] = rs.recommendations
         return recs  # type: ignore[return-value]
+    except SQLAlchemyError:
+        logger.exception("DB error while fetching recommendations")
+        raise HTTPException(status_code=500, detail="Database error while fetching recommendations")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to fetch recommendations")
         raise HTTPException(status_code=500, detail="Unable to fetch recommendations")
@@ -360,13 +406,13 @@ def assess_roles(payload: AssessmentIn, db: Session = Depends(get_db)) -> Assess
     for sname, t_level in target_req.items():
         c_level = current_req.get(sname)
         if c_level is None:
-            gaps.append({"skill": sname, "current": 0, "required": t_level, "gap": t_level})
+            gaps.append({"skill": sname, "current": 0, "required": int(t_level), "gap": int(t_level)})
         else:
-            diff = t_level - c_level
+            diff = int(t_level) - int(c_level)
             if diff > 0:
-                gaps.append({"skill": sname, "current": c_level, "required": t_level, "gap": diff})
+                gaps.append({"skill": sname, "current": int(c_level), "required": int(t_level), "gap": diff})
             else:
-                strengths.append({"skill": sname, "current": c_level, "required": t_level, "gap": diff})
+                strengths.append({"skill": sname, "current": int(c_level), "required": int(t_level), "gap": diff})
 
     meta = {"currentRole": {"id": current.id, "name": current.name}, "targetRole": {"id": target.id, "name": target.name}}
     return {"strengths": strengths, "gaps": gaps, "meta": meta}  # type: ignore[return-value]
