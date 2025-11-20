@@ -229,8 +229,9 @@ def seed_minimal_dataset(session: Session) -> None:
 def seed_minimal_dataset_idempotent(session: Session) -> None:
     """
     Idempotent seeding: ensure all baseline and extended roles/skills/mappings exist.
-    Safe to run multiple times; inserts missing data only.
+    Safe to run multiple times; inserts missing data only. This function:
+    - Upserts roles and skills by stable names.
+    - Adds missing role-skill links per mapping.
+    - Adds example recommendations if not present.
     """
-    # Reuse the same seeding code; it is already written to upsert by name and
-    # attach only missing role-skill links.
     seed_minimal_dataset(session)

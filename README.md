@@ -17,14 +17,18 @@ Environment
 - ALLOWED_CORS_ORIGINS (optional): comma-separated origins used when ALLOW_ALL_CORS is not true.
 
 Seeding and Data Notes
-- On startup, the service auto-seeds a baseline dataset if roles are empty.
-- Seed now includes 7 roles: Chief Architect, CTO, Head of Engineering, Staff Engineer, Engineering Manager, Product Manager, Platform Engineer.
+- On startup, the service always runs idempotent seeding for roles/skills/recommendations.
+- Seed includes 7 roles: Chief Architect, CTO, Head of Engineering, Staff Engineer, Engineering Manager, Product Manager, Platform Engineer.
 - Each role has ~8 core skills with required levels (1..5). Skill and role names are stable and can be used reliably in the UI.
+- Seeding is idempotent: it upserts by stable names and is safe to run repeatedly.
 - Database IDs are auto-assigned by SQLite; do not assume fixed numeric IDs across environments. Use role/skill names where possible.
-- Endpoints and response schemas are unchanged; GET /roles and role detail endpoints will include the newly seeded data.
+- Endpoints and response schemas are unchanged; GET /roles and role detail endpoints will include the seeded data.
+
+Removed admin reseed
+- The /admin/reseed endpoint and ALLOW_ADMIN_RESEED flag have been removed. Seeding occurs automatically on startup.
 
 Troubleshooting 502
 - Ensure backend container is running and /docs loads.
 - If /roles or /graph return 502, check backend logs for unhandled exceptions.
-- The app seeds a dataset at startup; if seeding fails, the app still starts but roles may be empty.
+- The app seeds a dataset at startup; if seeding fails, the app still starts but dataset may be incomplete.
 - /graph requires valid fromRole and toRole IDs and they must be different.
