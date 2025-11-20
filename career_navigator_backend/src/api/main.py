@@ -26,12 +26,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Allowed CORS origins for local React app and preview environment.
-# Can be overridden via ALLOWED_ORIGINS env var as a comma-separated list.
+# Can be overridden via ALLOWED_CORS_ORIGINS env var as a comma-separated list.
 DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "https://vscode-internal-31939-beta.beta01.cloud.kavia.ai:3000",
+    # Default preview origin (update as needed)
+    "https://vscode-internal-11652-beta.beta01.cloud.kavia.ai:3000",
 ]
-_env_origins = os.environ.get("ALLOWED_ORIGINS")
+_env_origins = os.environ.get("ALLOWED_CORS_ORIGINS")
 if _env_origins:
     # sanitize and split, ignore empty parts
     ALLOWED_ORIGINS = [o.strip() for o in _env_origins.split(",") if o.strip()]
@@ -54,11 +55,12 @@ app = FastAPI(
 
 # Configure CORS to explicitly allow preview and localhost origins.
 # Note: credentials are disabled unless cookies/auth are required.
+# Preflight OPTIONS requests are handled by CORSMiddleware.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_credentials=False,  # set True only if cookies/auth are required
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
