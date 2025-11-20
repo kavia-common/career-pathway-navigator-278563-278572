@@ -64,12 +64,12 @@ def seed_minimal_dataset(session: Session) -> None:
     for role in (chief_architect, cto):
         for skill in created_skills:
             level = mapping[role.name][skill.name]
-            # Attach if not already linked
+            # Attach if not already linked (idempotent seed)
             exists = [rs for rs in role.skills if rs.skill_id == skill.id]
             if exists:
                 continue
             link = role_repo.attach_skill(role, skill, required_level=level)
-            # Add a couple of sample recommendations
+            # Add a couple of sample recommendations for visibility in UI
             if role.name == "CTO" and skill.name == "Business & Product":
                 rec_repo.add_recommendation(
                     link,

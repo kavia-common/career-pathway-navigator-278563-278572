@@ -161,9 +161,20 @@ def set_progress(
         raise HTTPException(status_code=404, detail="Role not found")
 
     # Validate skill is part of the role's required skills
-    rs: Optional[RoleSkill] = next((x for x in role.skills if x.skill.name == _sanitize(skill_name)), None)  # type: ignore[attr-defined]
+    clean_skill = _sanitize(skill_name)
+    rs: Optional[RoleSkill] = next((x for x in role.skills if x.skill.name == clean_skill), None)  # type: ignore[attr-defined]
     if not rs:
-        raise HTTPException(status_code=400, detail="Skill not required for this role")
+        # Provide a clear validation error and include valid skills for UI hints
+        valid = sorted({x.skill.name for x in role.skills})
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Invalid skill_name for this role. Only role-required skills are allowed.",
+                "invalid_skill": clean_skill,
+                "role": role.name,
+                "valid_skills": valid,
+            },
+        )
 
     prepo = ProgressRepository(db)
     try:
