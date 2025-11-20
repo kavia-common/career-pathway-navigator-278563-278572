@@ -3,7 +3,8 @@ import os
 from contextlib import contextmanager
 from typing import Generator, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 # Configure logger for the DB layer
@@ -56,6 +57,58 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+# PUBLIC_INTERFACE
+def ensure_sqlite_schema_compatibility(engine_obj: Optional[Engine] = None) -> None:
+    """
+    Ensure runtime SQLite schema has required columns introduced in newer app versions.
+
+    Performs idempotent, lightweight migrations for:
+    - role_skills.is_gap (INTEGER NULL)
+    - role_skills.color (VARCHAR(16) NULL)
+
+    Safe to run multiple times; no-ops when columns already exist.
+    """
+    try:
+        eng: Engine = engine_obj or engine  # type: ignore[assignment]
+    except Exception:
+        logger.exception("Could not resolve SQLAlchemy engine for schema checks")
+        return
+
+    # Only relevant for SQLite in this MVP
+    try:
+        backend = str(eng.url.get_backend_name())
+        if backend != "sqlite":
+            return
+    except Exception:
+        # If backend resolution fails, skip silently
+        return
+
+    try:
+        with eng.begin() as conn:
+            try:
+                inspector = inspect(conn)
+                existing_cols = {c["name"] for c in inspector.get_columns("role_skills")}
+            except Exception:
+                logger.exception("Failed to inspect 'role_skills' table; skipping schema check")
+                return
+
+            if "is_gap" not in existing_cols:
+                try:
+                    conn.execute(text("ALTER TABLE role_skills ADD COLUMN is_gap INTEGER NULL"))
+                    logger.info("SQLite migration: added role_skills.is_gap")
+                except Exception:
+                    logger.warning("SQLite migration: role_skills.is_gap add failed (already exists or locked)")
+
+            if "color" not in existing_cols:
+                try:
+                    conn.execute(text("ALTER TABLE role_skills ADD COLUMN color VARCHAR(16) NULL"))
+                    logger.info("SQLite migration: added role_skills.color")
+                except Exception:
+                    logger.warning("SQLite migration: role_skills.color add failed (already exists or locked)")
+    except Exception:
+        logger.exception("SQLite schema compatibility check failed unexpectedly")
 
 
 # PUBLIC_INTERFACE

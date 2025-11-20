@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import urllib.parse
 from typing import Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -8,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
-from src.db.database import Base, engine, get_db
+from src.db.database import Base, engine, get_db, ensure_sqlite_schema_compatibility
 from src.db.models import Recommendation, Role, RoleSkill
 from src.db.repositories import ProgressRepository, RoleRepository
 from src.db.seed import seed_minimal_dataset_idempotent
@@ -83,11 +84,15 @@ else:
 @app.on_event("startup")
 def on_startup() -> None:
     """
-    Initialize database, create tables, and always run idempotent seeding.
+    Initialize database, create tables, run lightweight schema migrations, and always run idempotent seeding.
     Seeding is safe to run repeatedly; it upserts by stable names.
     """
     try:
         Base.metadata.create_all(bind=engine)
+
+        # Ensure runtime SQLite schema is compatible with current models (adds missing columns)
+        ensure_sqlite_schema_compatibility()
+
         # Ensure we have a session and handle its lifecycle robustly
         db_gen = get_db()
         session = next(db_gen)  # type: ignore[assignment]
@@ -148,6 +153,9 @@ def list_roles(db: Session = Depends(get_db)) -> List[RoleOut]:
 def get_role_detail(role_name: str, db: Session = Depends(get_db)) -> RoleDetailOut:
     """Fetch a role with its required skills and recommendations."""
     try:
+        # Decode %20 and other encodings, then sanitize
+        clean_name = _sanitize(urllib.parse.unquote(role_name))
+
         # Eager load nested relationships to avoid lazy-load after session issues
         role: Optional[Role] = (
             db.query(Role)
@@ -155,7 +163,7 @@ def get_role_detail(role_name: str, db: Session = Depends(get_db)) -> RoleDetail
                 joinedload(Role.skills).joinedload(RoleSkill.recommendations),
                 joinedload(Role.skills).joinedload(RoleSkill.skill),
             )
-            .filter(Role.name == _sanitize(role_name))
+            .filter(Role.name == clean_name)
             .first()
         )
         if not role:
@@ -183,7 +191,8 @@ def get_role_progress(role_name: str, db: Session = Depends(get_db)) -> List[Pro
     """List progress items for a given role."""
     rrepo = RoleRepository(db)
     prepo = ProgressRepository(db)
-    role = rrepo.get_role_by_name(_sanitize(role_name))
+    clean_name = _sanitize(urllib.parse.unquote(role_name))
+    role = rrepo.get_role_by_name(clean_name)
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     try:
@@ -221,7 +230,7 @@ def set_progress(
     - current_level: An integer between 0 and 5.
     """
     rrepo = RoleRepository(db)
-    role = rrepo.get_role_by_name(_sanitize(role_name))
+    role = rrepo.get_role_by_name(_sanitize(urllib.parse.unquote(role_name)))
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
 
