@@ -2,9 +2,13 @@
 
 Backend (FastAPI) key endpoints:
 - GET /roles
-- GET /roles/{role_name}
+- GET /roles/{role_name} (detail by name)
+- GET /roles/by-id/{role_id} (detail by ID)
 - GET /roles/{role_name}/progress
 - POST /roles/{role_name}/progress?skill_name=&status=&current_level=
+- GET /skills
+- GET /skills/{skill_id}
+- GET /skills/by-name/{skill_name}
 - GET /graph?fromRole=&toRole=
 - GET /recommendations?roleId=&skillId=
 - POST /assessments { currentRoleId, targetRoleId }

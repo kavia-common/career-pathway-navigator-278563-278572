@@ -65,6 +65,8 @@ class GraphNode(BaseModel):
     id: str = Field(..., description="Unique identifier used by D3 (e.g., role:1 or skill:Communication)")
     type: str = Field(..., description="Node type, e.g., role or skill")
     label: str = Field(..., description="Human-readable label")
+    # New optional entity identifier for detail fetching on the client
+    entity_id: Optional[int] = Field(None, description="Entity ID for this node (Role.id or Skill.id)")
     color: Optional[str] = Field(None, description="Optional color hex for this node")
     is_gap: Optional[bool] = Field(None, description="If true, this node represents a gap for the current role")
 
@@ -108,3 +110,18 @@ class AssessmentOut(BaseModel):
     strengths: List[AssessmentItem]
     gaps: List[AssessmentItem]
     meta: Dict[str, object]
+
+
+# Skill detail (reverse view of role requirements)
+class SkillRoleOut(BaseModel):
+    role: RoleOut
+    required_level: int = Field(..., ge=1, le=5)
+    is_gap: Optional[bool] = Field(None, description="If present, indicates gap annotation on role-skill")
+    color: Optional[str] = Field(None, description="Optional color hex for this role-skill")
+
+    class Config:
+        from_attributes = True
+
+
+class SkillDetailOut(SkillOut):
+    roles: List[SkillRoleOut] = []

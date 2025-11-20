@@ -15,12 +15,27 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_skills(skill_repo: SkillRepository, specs: List[Tuple[str, str, str]]) -> List[Skill]:
-    """Create or fetch skills by name based on the provided spec list."""
+    """Create or fetch skills by name based on the provided spec list.
+    If an existing skill is missing category/description, fill them in (idempotent enrichment).
+    """
     created: List[Skill] = []
     for name, category, description in specs:
-        s = skill_repo.get_skill_by_name(name) or skill_repo.create_skill(
-            name, category=category, description=description
-        )
+        existing = skill_repo.get_skill_by_name(name)
+        if existing:
+            changed = False
+            if (existing.category is None or str(existing.category).strip() == "") and category:
+                existing.category = category
+                changed = True
+            if (existing.description is None or str(existing.description).strip() == "") and description:
+                existing.description = description
+                changed = True
+            if changed:
+                # Flush only if we've changed fields
+                skill_repo.session.flush()
+            created.append(existing)
+            continue
+
+        s = skill_repo.create_skill(name, category=category, description=description)
         created.append(s)
     return created
 
@@ -83,7 +98,6 @@ def _attach_role_skills(
 
     # Compute gap annotations. If target_role_levels provided, a gap is when target requires more than role's required.
     GAP_COLOR = "#ef4444"
-    gaps: List[str] = []
     if target_role_levels is not None:
         for rs in role.skills:
             t_level = target_role_levels.get(rs.skill.name)
@@ -95,8 +109,6 @@ def _attach_role_skills(
                 is_gap = int(t_level) > int(rs.required_level)
                 rs.is_gap = 1 if is_gap else 0
                 rs.color = GAP_COLOR if is_gap else None
-                if is_gap:
-                    gaps.append(rs.skill.name)
 
     # Ensure at least 3 gap skills per role: if fewer than 3 marked, pick top required_level skills to flag as gaps
     try:
@@ -125,36 +137,46 @@ def seed_minimal_dataset(session: Session) -> None:
     rec_repo = RecommendationRepository(session)
     prog_repo = ProgressRepository(session)
 
-    # Core roles (existing)
-    chief_architect = role_repo.get_role_by_name("Chief Architect") or role_repo.create_role(
+    # Core roles (existing). If an existing role is missing description, enrich it.
+    def _ensure_role(name: str, desc: str):
+        r = role_repo.get_role_by_name(name)
+        if not r:
+            r = role_repo.create_role(name, description=desc)
+        else:
+            if (r.description is None or str(r.description).strip() == "") and desc:
+                r.description = desc
+                session.flush()
+        return r
+
+    chief_architect = _ensure_role(
         "Chief Architect",
-        description="Leads architecture strategy and complex systems design across the org.",
+        "Leads architecture strategy and complex systems design across the org.",
     )
-    cto = role_repo.get_role_by_name("CTO") or role_repo.create_role(
+    cto = _ensure_role(
         "CTO",
-        description="Exec-level role responsible for technology strategy, execution, and org leadership.",
+        "Exec-level role responsible for technology strategy, execution, and org leadership.",
     )
 
     # Extended roles to append
-    head_eng = role_repo.get_role_by_name("Head of Engineering") or role_repo.create_role(
+    head_eng = _ensure_role(
         "Head of Engineering",
-        description="Owns engineering delivery, org health, and operational excellence.",
+        "Owns engineering delivery, org health, and operational excellence.",
     )
-    staff_eng = role_repo.get_role_by_name("Staff Engineer") or role_repo.create_role(
+    staff_eng = _ensure_role(
         "Staff Engineer",
-        description="Drives cross-team technical direction and delivers high-impact systems.",
+        "Drives cross-team technical direction and delivers high-impact systems.",
     )
-    eng_manager = role_repo.get_role_by_name("Engineering Manager") or role_repo.create_role(
+    eng_manager = _ensure_role(
         "Engineering Manager",
-        description="Manages engineers, delivery, and career development for a team.",
+        "Manages engineers, delivery, and career development for a team.",
     )
-    product_manager = role_repo.get_role_by_name("Product Manager") or role_repo.create_role(
+    product_manager = _ensure_role(
         "Product Manager",
-        description="Owns product discovery, prioritization, and outcomes with cross-functional teams.",
+        "Owns product discovery, prioritization, and outcomes with cross-functional teams.",
     )
-    platform_eng = role_repo.get_role_by_name("Platform Engineer") or role_repo.create_role(
+    platform_eng = _ensure_role(
         "Platform Engineer",
-        description="Builds and maintains internal platforms that accelerate product teams.",
+        "Builds and maintains internal platforms that accelerate product teams.",
     )
 
     # Skills (existing + new) – keep names stable for ID consistency across runs
@@ -294,5 +316,6 @@ def seed_minimal_dataset_idempotent(session: Session) -> None:
     - Upserts roles and skills by stable names.
     - Adds missing role-skill links per mapping.
     - Adds example recommendations if not present.
+    - Enriches missing descriptions/categories when blank.
     """
     seed_minimal_dataset(session)

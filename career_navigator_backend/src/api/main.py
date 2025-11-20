@@ -10,8 +10,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from src.db.database import Base, engine, get_db, ensure_sqlite_schema_compatibility
-from src.db.models import Recommendation, Role, RoleSkill
-from src.db.repositories import ProgressRepository, RoleRepository
+from src.db.models import Recommendation, Role, RoleSkill, Skill
+from src.db.repositories import ProgressRepository, RoleRepository, SkillRepository
 from src.db.seed import seed_minimal_dataset_idempotent
 from src.schemas.schemas import (
     AssessmentIn,
@@ -21,6 +21,8 @@ from src.schemas.schemas import (
     RecommendationOut,
     RoleDetailOut,
     RoleOut,
+    SkillDetailOut,
+    SkillOut,
 )
 
 # Configure basic logging; in production, integrate with structured logging
@@ -52,6 +54,7 @@ app = FastAPI(
     openapi_tags=[
         {"name": "health", "description": "Service health and metadata"},
         {"name": "roles", "description": "Role and role details APIs"},
+        {"name": "skills", "description": "Skill APIs and details"},
         {"name": "progress", "description": "Progress tracking APIs"},
         {"name": "graph", "description": "Graph construction APIs for D3"},
         {"name": "assessments", "description": "Role gap assessment APIs"},
@@ -85,7 +88,7 @@ else:
 def on_startup() -> None:
     """
     Initialize database, create tables, run lightweight schema migrations, and always run idempotent seeding.
-    Seeding is safe to run repeatedly; it upserts by stable names.
+    Seeding is safe to run repeatedly; it upserts by stable names and enriches missing descriptions.
     """
     try:
         Base.metadata.create_all(bind=engine)
@@ -127,7 +130,7 @@ def health_check() -> dict:
     tags=["roles"],
     response_model=List[RoleOut],
     summary="List roles",
-    description="Returns all available roles.",
+    description="Returns all available roles, including descriptions.",
 )
 def list_roles(db: Session = Depends(get_db)) -> List[RoleOut]:
     """List all roles."""
@@ -147,8 +150,8 @@ def list_roles(db: Session = Depends(get_db)) -> List[RoleOut]:
     "/roles/{role_name}",
     tags=["roles"],
     response_model=RoleDetailOut,
-    summary="Get role detail",
-    description="Return role details, including required skills and recommendations.",
+    summary="Get role detail (by name)",
+    description="Return role details by name, including required skills and recommendations.",
 )
 def get_role_detail(role_name: str, db: Session = Depends(get_db)) -> RoleDetailOut:
     """Fetch a role with its required skills and recommendations."""
@@ -177,6 +180,125 @@ def get_role_detail(role_name: str, db: Session = Depends(get_db)) -> RoleDetail
     except Exception:  # noqa: BLE001
         logger.exception("Failed to fetch role detail")
         raise HTTPException(status_code=500, detail="Unable to fetch role")
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/roles/by-id/{role_id}",
+    tags=["roles"],
+    response_model=RoleDetailOut,
+    summary="Get role detail (by ID)",
+    description="Return role details by numeric ID, including required skills and recommendations.",
+)
+def get_role_detail_by_id(role_id: int, db: Session = Depends(get_db)) -> RoleDetailOut:
+    """Fetch a role by ID with its required skills and recommendations."""
+    try:
+        if role_id is None or int(role_id) < 1:
+            raise HTTPException(status_code=422, detail="Invalid role_id")
+        role: Optional[Role] = (
+            db.query(Role)
+            .options(
+                joinedload(Role.skills).joinedload(RoleSkill.recommendations),
+                joinedload(Role.skills).joinedload(RoleSkill.skill),
+            )
+            .filter(Role.id == int(role_id))
+            .first()
+        )
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        return role  # type: ignore[return-value]
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        logger.exception("DB error while fetching role detail by id")
+        raise HTTPException(status_code=500, detail="Database error while fetching role by id")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to fetch role detail by id")
+        raise HTTPException(status_code=500, detail="Unable to fetch role by id")
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/skills",
+    tags=["skills"],
+    response_model=List[SkillOut],
+    summary="List skills",
+    description="Returns all available skills, including category and description.",
+)
+def list_skills(db: Session = Depends(get_db)) -> List[SkillOut]:
+    """List all skills."""
+    try:
+        srepo = SkillRepository(db)
+        return srepo.list_skills()
+    except SQLAlchemyError:
+        logger.exception("DB error while listing skills")
+        raise HTTPException(status_code=500, detail="Database error while listing skills")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to list skills")
+        raise HTTPException(status_code=500, detail="Unable to list skills")
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/skills/{skill_id}",
+    tags=["skills"],
+    response_model=SkillDetailOut,
+    summary="Get skill detail (by ID)",
+    description="Return skill details by numeric ID, including roles that require it.",
+)
+def get_skill_detail(skill_id: int, db: Session = Depends(get_db)) -> SkillDetailOut:
+    """Fetch a skill by ID with roles that require it."""
+    try:
+        if skill_id is None or int(skill_id) < 1:
+            raise HTTPException(status_code=422, detail="Invalid skill_id")
+        skill: Optional[Skill] = (
+            db.query(Skill)
+            .options(joinedload(Skill.roles).joinedload(RoleSkill.role))
+            .filter(Skill.id == int(skill_id))
+            .first()
+        )
+        if not skill:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        return skill  # type: ignore[return-value]
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        logger.exception("DB error while fetching skill detail by id")
+        raise HTTPException(status_code=500, detail="Database error while fetching skill by id")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to fetch skill detail by id")
+        raise HTTPException(status_code=500, detail="Unable to fetch skill by id")
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/skills/by-name/{skill_name}",
+    tags=["skills"],
+    response_model=SkillDetailOut,
+    summary="Get skill detail (by name)",
+    description="Return skill details by unique name, including roles that require it.",
+)
+def get_skill_detail_by_name(skill_name: str, db: Session = Depends(get_db)) -> SkillDetailOut:
+    """Fetch a skill by name with roles that require it."""
+    try:
+        clean_name = _sanitize(urllib.parse.unquote(skill_name))
+        skill: Optional[Skill] = (
+            db.query(Skill)
+            .options(joinedload(Skill.roles).joinedload(RoleSkill.role))
+            .filter(Skill.name == clean_name)
+            .first()
+        )
+        if not skill:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        return skill  # type: ignore[return-value]
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        logger.exception("DB error while fetching skill detail by name")
+        raise HTTPException(status_code=500, detail="Database error while fetching skill by name")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to fetch skill detail by name")
+        raise HTTPException(status_code=500, detail="Unable to fetch skill by name")
 
 
 # PUBLIC_INTERFACE
@@ -291,6 +413,8 @@ def get_graph(
 
     The response also includes meta.stats counters: gapLinks, gapNodes, naturalGaps, forcedGaps,
     and desiredMinGaps/desiredMaxGaps to aid verification.
+
+    Nodes include 'entity_id' for both role and skill nodes to support client-side detail fetching.
     """
     # early param guard
     if fromRole == toRole:
@@ -354,9 +478,9 @@ def get_graph(
         nodes: List[Dict[str, object]] = []
         links: List[Dict[str, object]] = []
 
-        # Add role nodes
-        nodes.append({"id": f"role:{current.id}", "type": "role", "label": current.name})
-        nodes.append({"id": f"role:{target.id}", "type": "role", "label": target.name})
+        # Add role nodes with entity_id
+        nodes.append({"id": f"role:{current.id}", "type": "role", "label": current.name, "entity_id": int(current.id)})
+        nodes.append({"id": f"role:{target.id}", "type": "role", "label": target.name, "entity_id": int(target.id)})
 
         # Build fast map for role-skill annotations where available (unused for decisioning, but preserves explicit colors)
         def rs_map(role_obj: Role) -> Dict[str, RoleSkill]:
@@ -367,6 +491,15 @@ def get_graph(
 
         current_rs_by_skill = rs_map(current)
         target_rs_by_skill = rs_map(target)
+
+        # Map skill name -> id from both roles to supply entity_id on nodes
+        skill_id_by_name: Dict[str, int] = {}
+        for rs in list(current.skills) + list(target.skills):
+            try:
+                skill_id_by_name[rs.skill.name] = int(rs.skill.id)
+            except Exception:
+                # safety: skip any odd entries
+                continue
 
         # Skills are unified from both roles
         all_skill_names = set(list(current_req.keys()) + list(target_req.keys()))
@@ -391,6 +524,7 @@ def get_graph(
                     "label": sname,
                     "color": node_color,
                     "is_gap": bool(is_gap),
+                    "entity_id": int(skill_id_by_name.get(sname)) if skill_id_by_name.get(sname) is not None else None,
                 }
             )
 

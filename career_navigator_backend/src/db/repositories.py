@@ -31,6 +31,14 @@ class RoleRepository:
         return self.session.scalars(stmt).first()
 
     # PUBLIC_INTERFACE
+    def get_role_by_id(self, role_id: int) -> Optional[Role]:
+        """Fetch a role by its numeric ID."""
+        if not role_id or int(role_id) < 1:
+            return None
+        stmt = select(Role).where(Role.id == int(role_id))
+        return self.session.scalars(stmt).first()
+
+    # PUBLIC_INTERFACE
     def create_role(self, name: str, description: Optional[str] = None) -> Role:
         """Create a new role with the given name."""
         name = (name or "").strip()
@@ -80,6 +88,14 @@ class SkillRepository:
         if not name or not name.strip():
             return None
         stmt = select(Skill).where(Skill.name == name.strip())
+        return self.session.scalars(stmt).first()
+
+    # PUBLIC_INTERFACE
+    def get_skill_by_id(self, skill_id: int) -> Optional[Skill]:
+        """Fetch a skill by its numeric ID."""
+        if not skill_id or int(skill_id) < 1:
+            return None
+        stmt = select(Skill).where(Skill.id == int(skill_id))
         return self.session.scalars(stmt).first()
 
     # PUBLIC_INTERFACE
