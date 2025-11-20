@@ -288,21 +288,57 @@ def get_graph(
         target_req: Dict[str, int] = {rs.skill.name: rs.required_level for rs in target.skills}
 
         # Nodes: two roles + union of skills
-        nodes: List[Dict[str, str]] = []
+        nodes: List[Dict[str, object]] = []
         links: List[Dict[str, object]] = []
 
         # Add role nodes
         nodes.append({"id": f"role:{current.id}", "type": "role", "label": current.name})
         nodes.append({"id": f"role:{target.id}", "type": "role", "label": target.name})
 
+        # Build fast map for role-skill annotations (is_gap/color) where available
+        def rs_map(role_obj: Role) -> Dict[str, RoleSkill]:
+            out: Dict[str, RoleSkill] = {}
+            for rs in role_obj.skills:
+                out[rs.skill.name] = rs
+            return out
+
+        current_rs_by_skill = rs_map(current)
+        target_rs_by_skill = rs_map(target)
+
         # Skills are unified from both roles
         all_skill_names = set(list(current_req.keys()) + list(target_req.keys()))
+        GAP_COLOR = "#ef4444"
         for sname in sorted(all_skill_names):
+            # Skill node color/gap derived from target vs current level difference
+            c_level = current_req.get(sname, 0)
+            t_level = target_req.get(sname, 0)
+            is_gap = t_level > c_level
+            node_color = None
+            if is_gap:
+                node_color = GAP_COLOR
+            # If role-skill annotation exists on target or current, prefer its explicit color/is_gap
+            if sname in target_rs_by_skill and target_rs_by_skill[sname].color:
+                node_color = target_rs_by_skill[sname].color
+            elif sname in current_rs_by_skill and current_rs_by_skill[sname].color:
+                node_color = current_rs_by_skill[sname].color
+            node_is_gap = is_gap
+            if sname in target_rs_by_skill and target_rs_by_skill[sname].is_gap is not None:
+                node_is_gap = bool(target_rs_by_skill[sname].is_gap)
+
             # Skill node
-            nodes.append({"id": f"skill:{sname}", "type": "skill", "label": sname})
+            nodes.append(
+                {
+                    "id": f"skill:{sname}",
+                    "type": "skill",
+                    "label": sname,
+                    "color": node_color,
+                    "is_gap": node_is_gap,
+                }
+            )
 
             # Link current role -> skill with required level if present
             if sname in current_req:
+                color = current_rs_by_skill.get(sname).color if current_rs_by_skill.get(sname) else None
                 links.append(
                     {
                         "source": f"role:{current.id}",
@@ -310,10 +346,15 @@ def get_graph(
                         "type": "requires",
                         "level": int(current_req[sname]),
                         "from": "current",
+                        "color": color,
+                        "is_gap": bool(current_rs_by_skill.get(sname).is_gap) if current_rs_by_skill.get(sname) and current_rs_by_skill.get(sname).is_gap is not None else False,
                     }
                 )
             # Link target role -> skill
             if sname in target_req:
+                # Compute link-level gap against current
+                diff_gap = int(target_req[sname]) > int(c_level or 0)
+                color = target_rs_by_skill.get(sname).color if target_rs_by_skill.get(sname) else (GAP_COLOR if diff_gap else None)
                 links.append(
                     {
                         "source": f"role:{target.id}",
@@ -321,6 +362,8 @@ def get_graph(
                         "type": "requires",
                         "level": int(target_req[sname]),
                         "from": "target",
+                        "color": color,
+                        "is_gap": diff_gap,
                     }
                 )
 

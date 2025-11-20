@@ -28,6 +28,9 @@ class SkillOut(BaseModel):
 class RoleSkillOut(BaseModel):
     skill: SkillOut
     required_level: int = Field(..., ge=1, le=5)
+    # Gap annotation fields
+    is_gap: Optional[bool] = Field(None, description="True when this role requires the skill and it is considered a gap")
+    color: Optional[str] = Field(None, description="Hex color for this role-skill (e.g., '#ef4444' for gaps)")
     recommendations: List[RecommendationOut] = []
 
     class Config:
@@ -62,6 +65,8 @@ class GraphNode(BaseModel):
     id: str = Field(..., description="Unique identifier used by D3 (e.g., role:1 or skill:Communication)")
     type: str = Field(..., description="Node type, e.g., role or skill")
     label: str = Field(..., description="Human-readable label")
+    color: Optional[str] = Field(None, description="Optional color hex for this node")
+    is_gap: Optional[bool] = Field(None, description="If true, this node represents a gap for the current role")
 
 
 class GraphLink(BaseModel):
@@ -70,6 +75,8 @@ class GraphLink(BaseModel):
     type: str = Field(..., description="Link type, e.g., requires")
     level: Optional[int] = Field(None, ge=0, le=5, description="Required level when applicable")
     from_: Optional[str] = Field(None, alias="from", description="Origin (current|target) for requires link")
+    color: Optional[str] = Field(None, description="Optional color hex for this link")
+    is_gap: Optional[bool] = Field(None, description="If true, this link represents a gap for current role")
 
 
 class GraphMeta(BaseModel):

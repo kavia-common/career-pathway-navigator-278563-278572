@@ -83,6 +83,9 @@ class RoleSkill(TimestampMixin, Base):
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"), nullable=False)
     skill_id: Mapped[int] = mapped_column(ForeignKey("skills.id", ondelete="CASCADE"), nullable=False)
     required_level: Mapped[int] = mapped_column(Integer, nullable=False, default=3)  # 1..5 scale
+    # Gap annotation fields (nullable for backward compatibility)
+    is_gap: Mapped[Optional[bool]] = mapped_column(Integer, nullable=True, default=None)  # stored as 0/1 by SQLite
+    color: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)  # e.g., "#ef4444"
 
     role: Mapped[Role] = relationship("Role", back_populates="skills")
     skill: Mapped[Skill] = relationship("Skill", back_populates="roles")

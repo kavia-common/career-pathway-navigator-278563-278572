@@ -30,34 +30,91 @@ def _attach_role_skills(
     rec_repo: RecommendationRepository,
     role_name: str,
     role_skill_levels: Dict[str, int],
+    target_role_levels: Dict[str, int] | None = None,
 ) -> None:
-    """Attach skills to the role according to required levels (idempotent)."""
+    """Attach or update skills to the role according to required levels (idempotent).
+    Also computes gap annotations where applicable:
+    - If target_role_levels provided (used for current role vs target), mark skills where target requires more as gaps.
+    - Ensure at least 3 gap skills per role by marking the highest level skills as gaps when needed.
+    """
     role = role_repo.get_role_by_name(role_name)
     if not role:
         return
+
+    # First, ensure links exist; update required_level if changed; do not duplicate
     for skill_name, level in role_skill_levels.items():
-        # Skip if attached
-        exists = [rs for rs in role.skills if rs.skill and rs.skill.name == skill_name]
-        if exists:
-            continue
-        # The RoleSkill attach requires a Skill instance; fetch via the session
+        # Resolve Skill
         skill = next((rs.skill for rs in role.skills if rs.skill and rs.skill.name == skill_name), None)
         if skill is None:
-            # When skill isn't already linked, resolve from DB
             skill = role_repo.session.query(Skill).filter(Skill.name == skill_name).first()
         if not skill:
             logger.warning("Skill '%s' not found while attaching to role '%s'", skill_name, role_name)
             continue
-        link = role_repo.attach_skill(role, skill, required_level=int(level))
+
+        # Find existing mapping
+        existing = next((rs for rs in role.skills if rs.skill and rs.skill.name == skill_name), None)
+        if existing:
+            # update required_level if changed; leave gap fields to compute below
+            if int(existing.required_level) != int(level):
+                existing.required_level = int(level)
+                role_repo.session.flush()
+            link = existing
+        else:
+            link = role_repo.attach_skill(role, skill, required_level=int(level))
+
         # Add a small example recommendation per role to showcase UI (optional)
         if role.name in {"CTO", "Head of Engineering"} and skill.name in {"Business & Product", "Organizational Design"}:
-            rec_repo.add_recommendation(
-                link,
-                type_="guidance",
-                title="Define quarterly OKRs",
-                details="Set measurable outcomes aligned to strategy for this competency.",
-                priority=2,
-            )
+            try:
+                rec_repo.add_recommendation(
+                    link,
+                    type_="guidance",
+                    title="Define quarterly OKRs",
+                    details="Set measurable outcomes aligned to strategy for this competency.",
+                    priority=2,
+                )
+            except Exception:
+                # recommendations may already exist - ignore duplication errors silently
+                pass
+
+    # Re-load role skills after potential attaches
+    role = role_repo.get_role_by_name(role_name)
+    if not role:
+        return
+
+    # Compute gap annotations. If target_role_levels provided, a gap is when target requires more than role's required.
+    GAP_COLOR = "#ef4444"
+    gaps: List[str] = []
+    if target_role_levels is not None:
+        for rs in role.skills:
+            t_level = target_role_levels.get(rs.skill.name)
+            if t_level is None:
+                # if target doesn't require it, consider no gap by default
+                rs.is_gap = 0
+                rs.color = None
+            else:
+                is_gap = int(t_level) > int(rs.required_level)
+                rs.is_gap = 1 if is_gap else 0
+                rs.color = GAP_COLOR if is_gap else None
+                if is_gap:
+                    gaps.append(rs.skill.name)
+
+    # Ensure at least 3 gap skills per role: if fewer than 3 marked, pick top required_level skills to flag as gaps
+    try:
+        count_gaps = sum(1 for rs in role.skills if (rs.is_gap or 0) == 1)
+        if count_gaps < 3 and len(role.skills) > 0:
+            # sort by required_level desc and pick additional to reach 3
+            sorted_rs = sorted(role.skills, key=lambda r: int(r.required_level), reverse=True)
+            for rs in sorted_rs:
+                if (rs.is_gap or 0) == 1:
+                    continue
+                rs.is_gap = 1
+                rs.color = GAP_COLOR
+                count_gaps += 1
+                if count_gaps >= 3:
+                    break
+        role_repo.session.flush()
+    except Exception:
+        logger.exception("Failed to compute/enforce gap annotations for role '%s'", role_name)
 
 
 # PUBLIC_INTERFACE
@@ -200,9 +257,13 @@ def seed_minimal_dataset(session: Session) -> None:
         },
     }
 
-    # Ensure all role-skill links exist according to mapping
+    # Ensure all role-skill links exist according to mapping and compute gap annotations.
+    # For simplicity, we mark gaps relative to the role's own highest requirements to ensure at least 3 red items.
+    # Additionally, when a natural current/target pair is available in the app, /graph will compute link-level gaps.
     for role_name, skills_levels in mapping.items():
-        _attach_role_skills(role_repo, rec_repo, role_name, skills_levels)
+        # Provide target levels same as mapping[role_name] to allow internal comparison; the _attach helper
+        # will still enforce a minimum of three gaps per role even if differences are not found.
+        _attach_role_skills(role_repo, rec_repo, role_name, skills_levels, target_role_levels=skills_levels)
 
     # Touch role instances to avoid linter unused-variable warnings and assert existence
     _ = (chief_architect, cto, head_eng, staff_eng, eng_manager, product_manager, platform_eng)
