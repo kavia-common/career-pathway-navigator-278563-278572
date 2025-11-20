@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from src.db.database import Base, engine, get_db
 from src.db.models import Recommendation, Role, RoleSkill
 from src.db.repositories import ProgressRepository, RoleRepository
-from src.db.seed import seed_minimal_dataset
+from src.db.seed import seed_minimal_dataset, seed_minimal_dataset_idempotent
 from src.schemas.schemas import (
     AssessmentIn,
     AssessmentOut,
@@ -112,6 +112,48 @@ def on_startup() -> None:
 def health_check() -> dict:
     """Return a simple health payload."""
     return {"message": "Healthy"}
+
+
+def _is_admin_reseed_enabled() -> bool:
+    """
+    Check whether admin reseed endpoint is enabled via environment variable.
+    Only enabled when ALLOW_ADMIN_RESEED is set to a truthy value.
+    """
+    return os.environ.get("ALLOW_ADMIN_RESEED", "false").strip().lower() in {"1", "true", "yes", "y"}
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/admin/reseed",
+    tags=["health"],
+    summary="Admin: reseed dataset (idempotent)",
+    description="Runs idempotent seeding to add any missing roles, skills, and mappings. Requires ALLOW_ADMIN_RESEED=true.",
+)
+def admin_reseed(db: Session = Depends(get_db)) -> Dict[str, object]:
+    """
+    Admin-only endpoint to re-run idempotent seeding and ensure all roles/skills are present.
+    This does not delete existing data; it only inserts missing items and links.
+    """
+    if not _is_admin_reseed_enabled():
+        raise HTTPException(status_code=403, detail="Admin reseed is disabled")
+    try:
+        before_roles = len(RoleRepository(db).list_roles())
+        seed_minimal_dataset_idempotent(db)
+        db.commit()
+        repo = RoleRepository(db)
+        roles = repo.list_roles()
+        return {
+            "message": "Reseed complete",
+            "roles_count": len(roles),
+            "roles": [r.name for r in roles],
+            "previous_roles_count": before_roles,
+        }
+    except SQLAlchemyError:
+        logger.exception("DB error while reseeding")
+        raise HTTPException(status_code=500, detail="Database error while reseeding")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to reseed")
+        raise HTTPException(status_code=500, detail="Unable to reseed")
 
 
 # PUBLIC_INTERFACE

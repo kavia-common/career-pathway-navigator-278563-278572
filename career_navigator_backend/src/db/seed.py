@@ -223,3 +223,14 @@ def seed_minimal_dataset(session: Session) -> None:
         prog_repo.set_progress(chief_architect, skill, status=status, current_level=3)
 
     logger.info("Dataset seeded successfully with baseline and extended roles.")
+
+
+# PUBLIC_INTERFACE
+def seed_minimal_dataset_idempotent(session: Session) -> None:
+    """
+    Idempotent seeding: ensure all baseline and extended roles/skills/mappings exist.
+    Safe to run multiple times; inserts missing data only.
+    """
+    # Reuse the same seeding code; it is already written to upsert by name and
+    # attach only missing role-skill links.
+    seed_minimal_dataset(session)
